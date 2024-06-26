@@ -46,17 +46,17 @@ struct CodeFileView: View {
 
     @EnvironmentObject private var editorManager: EditorManager
 
-    @StateObject private var themeModel: ThemeModel = .shared
+    @ObservedObject private var themeModel: ThemeModel = .shared
 
-    private var cancellables = [AnyCancellable]()
+    private var cancellables = Set<AnyCancellable>()
 
     private let isEditable: Bool
 
     private let undoManager = CEUndoManager()
 
     init(codeFile: CodeFileDocument, textViewCoordinators: [TextViewCoordinator] = [], isEditable: Bool = true) {
-        self.codeFile = codeFile
-        self.textViewCoordinators = textViewCoordinators
+        self._codeFile = .init(wrappedValue: codeFile)
+        self.textViewCoordinators = textViewCoordinators + [codeFile.contentCoordinator]
         self.isEditable = isEditable
 
         if let openOptions = codeFile.openOptions {
@@ -65,23 +65,21 @@ struct CodeFileView: View {
         }
 
         codeFile
-            .$content
-            .dropFirst()
-            .debounce(
-                for: 0.25,
-                scheduler: DispatchQueue.main
-            )
+            .contentCoordinator
+            .textUpdatePublisher
+            .debounce(for: 1.0, scheduler: DispatchQueue.main)
             .sink { _ in
                 codeFile.updateChangeCount(.changeDone)
-                codeFile.autosave(withImplicitCancellability: false) { _ in
-                }
+                codeFile.autosave(withImplicitCancellability: false) { _ in }
             }
             .store(in: &cancellables)
 
         codeFile.undoManager = self.undoManager.manager
     }
 
-    @State private var selectedTheme = ThemeModel.shared.selectedTheme ?? ThemeModel.shared.themes.first!
+    private var currentTheme: Theme {
+        themeModel.selectedTheme ?? themeModel.themes.first!
+    }
 
     @State private var font: NSFont = Settings[\.textEditing].font.current
 
@@ -109,9 +107,9 @@ struct CodeFileView: View {
 
     var body: some View {
         CodeEditSourceEditor(
-            $codeFile.content,
+            codeFile.content ?? NSTextStorage(),
             language: getLanguage(),
-            theme: selectedTheme.editor.editorTheme,
+            theme: currentTheme.editor.editorTheme,
             font: font,
             tabWidth: codeFile.defaultTabWidth ?? defaultTabWidth,
             indentOption: (codeFile.indentOption ?? indentOption).textViewOption(),
@@ -135,17 +133,9 @@ struct CodeFileView: View {
                 EffectView(.contentBackground)
             }
         }
-        .colorScheme(
-            selectedTheme.appearance == .dark
-            ? .dark
-            : .light
-        )
+        .colorScheme(currentTheme.appearance == .dark ? .dark : .light)
         // minHeight zero fixes a bug where the app would freeze if the contents of the file are empty.
         .frame(minHeight: .zero, maxHeight: .infinity)
-        .onChange(of: themeModel.selectedTheme) { newValue in
-            guard let theme = newValue else { return }
-            self.selectedTheme = theme
-        }
         .onChange(of: settingsFont) { newFontSetting in
             font = newFontSetting.current
         }
@@ -160,16 +150,18 @@ struct CodeFileView: View {
         }
         return codeFile.language ?? CodeLanguage.detectLanguageFrom(
             url: url,
-            prefixBuffer: codeFile.content.getFirstLines(5),
-            suffixBuffer: codeFile.content.getLastLines(5)
+            prefixBuffer: codeFile.content?.string.getFirstLines(5),
+            suffixBuffer: codeFile.content?.string.getLastLines(5)
         )
     }
 
     private func getBracketPairHighlight() -> BracketPairHighlight? {
-        let theme = ThemeModel.shared.selectedTheme ?? ThemeModel.shared.themes.first!
-        let color = Settings[\.textEditing].bracketHighlight.useCustomColor
-        ? Settings[\.textEditing].bracketHighlight.color.nsColor
-        : theme.editor.text.nsColor.withAlphaComponent(0.8)
+        let color = if Settings[\.textEditing].bracketHighlight.useCustomColor {
+            Settings[\.textEditing].bracketHighlight.color.nsColor
+        } else {
+            currentTheme.editor.text.nsColor.withAlphaComponent(0.8)
+        }
+
         switch Settings[\.textEditing].bracketHighlight.highlightType {
         case .disabled:
             return nil

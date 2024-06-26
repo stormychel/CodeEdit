@@ -722,6 +722,24 @@
       "contributions": [
         "bug"
       ]
+    },
+    {
+      "login": "danielzsh",
+      "name": "Daniel Zhu",
+      "avatar_url": "https://avatars.githubusercontent.com/u/65467530?v=4",
+      "profile": "http://danielz.xyz",
+      "contributions": [
+        "bug"
+      ]
+    },
+    {
+      "login": "simonwhitaker",
+      "name": "Simon Whitaker",
+      "avatar_url": "https://avatars.githubusercontent.com/u/116432?v=4",
+      "profile": "https://github.com/simonwhitaker",
+      "contributions": [
+        "bug"
+      ]
     }
   ],
   "contributorsPerLine": 7,

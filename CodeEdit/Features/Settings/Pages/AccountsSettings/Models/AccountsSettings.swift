@@ -9,9 +9,9 @@ import Foundation
 
 extension SettingsData {
 
-    /// The global settings for text editing
+    /// The global settings for source control accounts
     struct AccountsSettings: Codable, Hashable, SearchableSettingsPage {
-        /// An integer indicating how many spaces a `tab` will generate
+        /// The list of git accounts the user has saved
         var sourceControlAccounts: GitAccounts = .init()
 
         /// The search keys

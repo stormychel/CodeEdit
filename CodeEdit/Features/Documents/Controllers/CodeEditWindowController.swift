@@ -10,8 +10,6 @@ import SwiftUI
 import Combine
 
 final class CodeEditWindowController: NSWindowController, NSToolbarDelegate, ObservableObject {
-    static let minSidebarWidth: CGFloat = 242
-
     @Published var navigatorCollapsed = false
     @Published var inspectorCollapsed = false
     @Published var toolbarCollapsed = false
@@ -25,28 +23,45 @@ final class CodeEditWindowController: NSWindowController, NSToolbarDelegate, Obs
     var commandPalettePanel: SearchPanel?
     var navigatorSidebarViewModel: NavigatorSidebarViewModel?
 
+    var taskNotificationHandler: TaskNotificationHandler
+
     var splitViewController: NSSplitViewController!
 
     internal var cancellables = [AnyCancellable]()
 
-    init(window: NSWindow, workspace: WorkspaceDocument) {
+    init(
+        window: NSWindow?,
+        workspace: WorkspaceDocument?,
+        taskNotificationHandler: TaskNotificationHandler
+    ) {
+        self.taskNotificationHandler = taskNotificationHandler
         super.init(window: window)
+        guard let workspace else { return }
         self.workspace = workspace
         self.workspaceSettings = CEWorkspaceSettings(workspaceDocument: workspace)
         setupSplitView(with: workspace)
 
-        let view = CodeEditSplitView(controller: splitViewController).ignoresSafeArea()
-
+        // Previous:
         // An NSHostingController is used, so the root viewController of the window is a SwiftUI-managed one.
         // This allows us to use some SwiftUI features, like focusedSceneObject.
-        contentViewController = NSHostingController(rootView: view)
+        // -----
+        // let view = CodeEditSplitView(controller: splitViewController).ignoresSafeArea()
+        // contentViewController = NSHostingController(rootView: view)
+        // -----
+        //
+        // New:
+        // The previous decision led to a very jank split controller mechanism because SwiftUI's layout system is not
+        // very compatible with AppKit's when it comes to the inspector/navigator toolbar & split view system.
+        // -----
+        contentViewController = splitViewController
+        // -----
 
         observers = [
             splitViewController.splitViewItems.first!.observe(\.isCollapsed, changeHandler: { [weak self] item, _ in
                 self?.navigatorCollapsed = item.isCollapsed
             }),
             splitViewController.splitViewItems.last!.observe(\.isCollapsed, changeHandler: { [weak self] item, _ in
-                self?.navigatorCollapsed = item.isCollapsed
+                self?.inspectorCollapsed = item.isCollapsed
             })
         ]
 
@@ -62,178 +77,19 @@ final class CodeEditWindowController: NSWindowController, NSToolbarDelegate, Obs
     }
 
     private func setupSplitView(with workspace: WorkspaceDocument) {
-        let feedbackPerformer = NSHapticFeedbackManager.defaultPerformer
-        let splitVC = CodeEditSplitViewController(workspace: workspace, feedbackPerformer: feedbackPerformer)
-
-        let navigatorViewModel = NavigatorSidebarViewModel()
-        navigatorSidebarViewModel = navigatorViewModel
-
-        let settingsView = SettingsInjector {
-            NavigatorAreaView(workspace: workspace, viewModel: navigatorViewModel)
-                .environmentObject(workspace)
-                .environmentObject(workspace.editorManager)
+        guard let window else {
+            assertionFailure("No window found for this controller. Cannot set up content.")
+            return
         }
 
-        let navigator = NSSplitViewItem(
-            sidebarWithViewController: NSHostingController(rootView: settingsView)
+        let navigatorModel = NavigatorSidebarViewModel()
+        navigatorSidebarViewModel = navigatorModel
+        self.splitViewController = CodeEditSplitViewController(
+            workspace: workspace,
+            navigatorViewModel: navigatorModel,
+            windowRef: window
         )
-        navigator.titlebarSeparatorStyle = .none
-        navigator.minimumThickness = Self.minSidebarWidth
-        navigator.collapseBehavior = .useConstraints
-
-        splitVC.addSplitViewItem(navigator)
-
-        let workspaceView = SettingsInjector {
-            WindowObserver(window: window!) {
-                WorkspaceView()
-                    .environmentObject(workspace)
-                    .environmentObject(workspace.editorManager)
-                    .environmentObject(workspace.utilityAreaModel)
-            }
-        }
-
-        let mainContent = NSSplitViewItem(viewController: NSHostingController(rootView: workspaceView))
-        mainContent.titlebarSeparatorStyle = .line
-        mainContent.holdingPriority = .init(50)
-
-        splitVC.addSplitViewItem(mainContent)
-
-        let inspectorView = SettingsInjector {
-            InspectorAreaView(viewModel: InspectorAreaViewModel())
-                .environmentObject(workspace)
-                .environmentObject(workspace.editorManager)
-        }
-
-        let inspector = NSSplitViewItem(viewController: NSHostingController(rootView: inspectorView))
-        inspector.titlebarSeparatorStyle = .none
-        inspector.minimumThickness = Self.minSidebarWidth
-        inspector.isCollapsed = true
-        inspector.canCollapse = true
-        inspector.collapseBehavior = .useConstraints
-        inspector.isSpringLoaded = true
-
-        splitVC.addSplitViewItem(inspector)
-
-        self.splitViewController = splitVC
         self.listenToDocumentEdited(workspace: workspace)
-    }
-
-    private func setupToolbar() {
-        let toolbar = NSToolbar(identifier: UUID().uuidString)
-        toolbar.delegate = self
-        toolbar.displayMode = .labelOnly
-        toolbar.showsBaselineSeparator = false
-        self.window?.titleVisibility = toolbarCollapsed ? .visible : .hidden
-        self.window?.toolbarStyle = .unifiedCompact
-        if Settings[\.general].tabBarStyle == .native {
-            // Set titlebar background as transparent by default in order to
-            // style the toolbar background in native tab bar style.
-            self.window?.titlebarSeparatorStyle = .none
-        } else {
-            // In Xcode tab bar style, we use default toolbar background with
-            // line separator.
-            self.window?.titlebarSeparatorStyle = .automatic
-        }
-        self.window?.toolbar = toolbar
-    }
-
-    // MARK: - Toolbar
-
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [
-            .toggleFirstSidebarItem,
-            .sidebarTrackingSeparator,
-            .branchPicker,
-            .flexibleSpace,
-            .itemListTrackingSeparator,
-            .flexibleSpace,
-            .toggleLastSidebarItem
-        ]
-    }
-
-    func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] {
-        [
-            .toggleFirstSidebarItem,
-            .sidebarTrackingSeparator,
-            .flexibleSpace,
-            .itemListTrackingSeparator,
-            .toggleLastSidebarItem,
-            .branchPicker
-        ]
-    }
-
-    func toggleToolbar() {
-        toolbarCollapsed.toggle()
-        updateToolbarVisibility()
-    }
-
-    private func updateToolbarVisibility() {
-        if toolbarCollapsed {
-            window?.titleVisibility = .visible
-            window?.title = workspace?.workspaceFileManager?.folderUrl.lastPathComponent ?? "Empty"
-            window?.toolbar = nil
-        } else {
-            window?.titleVisibility = .hidden
-            setupToolbar()
-        }
-    }
-
-    func toolbar(
-        _ toolbar: NSToolbar,
-        itemForItemIdentifier itemIdentifier: NSToolbarItem.Identifier,
-        willBeInsertedIntoToolbar flag: Bool
-    ) -> NSToolbarItem? {
-        switch itemIdentifier {
-        case .itemListTrackingSeparator:
-            guard let splitViewController else { return nil }
-
-            return NSTrackingSeparatorToolbarItem(
-                identifier: .itemListTrackingSeparator,
-                splitView: splitViewController.splitView,
-                dividerIndex: 1
-            )
-        case .toggleFirstSidebarItem:
-            let toolbarItem = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier.toggleFirstSidebarItem)
-            toolbarItem.label = "Navigator Sidebar"
-            toolbarItem.paletteLabel = " Navigator Sidebar"
-            toolbarItem.toolTip = "Hide or show the Navigator"
-            toolbarItem.isBordered = true
-            toolbarItem.target = self
-            toolbarItem.action = #selector(self.toggleFirstPanel)
-            toolbarItem.image = NSImage(
-                systemSymbolName: "sidebar.leading",
-                accessibilityDescription: nil
-            )?.withSymbolConfiguration(.init(scale: .large))
-
-            return toolbarItem
-        case .toggleLastSidebarItem:
-            let toolbarItem = NSToolbarItem(itemIdentifier: NSToolbarItem.Identifier.toggleLastSidebarItem)
-            toolbarItem.label = "Inspector Sidebar"
-            toolbarItem.paletteLabel = "Inspector Sidebar"
-            toolbarItem.toolTip = "Hide or show the Inspectors"
-            toolbarItem.isBordered = true
-            toolbarItem.target = self
-            toolbarItem.action = #selector(self.toggleLastPanel)
-            toolbarItem.image = NSImage(
-                systemSymbolName: "sidebar.trailing",
-                accessibilityDescription: nil
-            )?.withSymbolConfiguration(.init(scale: .large))
-
-            return toolbarItem
-        case .branchPicker:
-            let toolbarItem = NSToolbarItem(itemIdentifier: .branchPicker)
-            let view = NSHostingView(
-                rootView: ToolbarBranchPicker(
-                    workspaceFileManager: workspace?.workspaceFileManager
-                )
-            )
-            toolbarItem.view = view
-
-            return toolbarItem
-
-        default:
-            return NSToolbarItem(itemIdentifier: itemIdentifier)
-        }
     }
 
     private func getSelectedCodeFile() -> CodeFileDocument? {
